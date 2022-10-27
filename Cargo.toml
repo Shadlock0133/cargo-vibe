@@ -4,6 +4,7 @@ version = "0.0.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/Shadlock0133/cargo-vibe"
+description = "cargo x buttplug.io"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
