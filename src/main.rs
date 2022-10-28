@@ -1,7 +1,13 @@
-use std::{io::BufReader, process::Command, time::Duration};
+use std::{
+    io::BufReader,
+    process::{Command, Stdio},
+    time::Duration,
+};
 
 use buttplug::{client::ButtplugClient, util::in_process_client};
-use cargo_metadata::{BuildFinished, Message};
+use cargo_metadata::{
+    diagnostic::Diagnostic, BuildFinished, CompilerMessage, Message,
+};
 use clap::{Parser, Subcommand};
 use tokio::{spawn, time::sleep};
 
@@ -26,11 +32,21 @@ async fn start_client() -> ButtplugClient {
 
 fn is_success(stdout: Vec<u8>) -> bool {
     for message in Message::parse_stream(BufReader::new(stdout.as_slice())) {
-        if let Ok(Message::BuildFinished(BuildFinished {
-            success: true, ..
-        })) = message
-        {
-            return true;
+        match message {
+            Ok(Message::BuildFinished(BuildFinished { success, .. })) => {
+                return success
+            }
+            Ok(Message::CompilerMessage(CompilerMessage {
+                message:
+                    Diagnostic {
+                        rendered: Some(rendered),
+                        ..
+                    },
+                ..
+            })) => {
+                eprintln!("{rendered}");
+            }
+            _ => (),
         }
     }
     false
@@ -41,13 +57,19 @@ async fn main() {
     match Opt::parse() {
         Opt::Vibe(Cmd::Build) => {
             let client = spawn(start_client());
-            let output = Command::new("cargo")
-                .args(&["build", "--message-format=json"])
-                .output()
+            let cmd = Command::new("cargo")
+                .args(&[
+                    "build",
+                    "--message-format=json-diagnostic-rendered-ansi,\
+                        json-render-diagnostics",
+                ])
+                .stdout(Stdio::piped())
+                .spawn()
                 .unwrap();
 
+            let output = cmd.wait_with_output().unwrap();
             if is_success(output.stdout) {
-                eprintln!("build successful!");
+                eprintln!("[cargo-vibe] build successful!");
                 let client = client.await.unwrap();
                 for device in client.devices() {
                     device
@@ -58,10 +80,7 @@ async fn main() {
                 sleep(Duration::from_secs(3)).await;
                 client.stop_all_devices().await.unwrap();
             } else {
-                eprintln!(
-                    "build failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                eprintln!("[cargo-vibe] build failed");
             }
         }
     }
