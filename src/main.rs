@@ -1,107 +1,99 @@
-use std::{
-    io::BufReader,
-    process::{Command, Stdio},
-    time::Duration,
-};
+use std::{ffi::OsStr, time::Duration};
 
-use buttplug::{client::ButtplugClient, util::in_process_client};
-use cargo_metadata::{
-    diagnostic::Diagnostic, BuildFinished, CompilerMessage, Message,
+use buttplug::{
+    client::{ButtplugClient, ButtplugClientError, VibrateCommand},
+    core::{
+        connector::{
+            ButtplugRemoteConnector as RemoteConn,
+            ButtplugWebsocketClientTransport as WebSocketTransport,
+        },
+        message::serializer::ButtplugClientJSONSerializer as JsonSer,
+    },
+    util::in_process_client,
 };
-use clap::{Parser, Subcommand};
+use futures::FutureExt;
 use tokio::{spawn, time::sleep};
 
-#[derive(Parser)]
-enum Opt {
-    #[clap(subcommand)]
-    Vibe(Cmd),
+const CLIENT_NAME: &str = "cargo-vibe";
+
+async fn connect_to_server() -> Result<ButtplugClient, ButtplugClientError> {
+    let client = ButtplugClient::new(CLIENT_NAME);
+    let connector = RemoteConn::<_, JsonSer, _, _>::new(
+        WebSocketTransport::new_insecure_connector("ws://127.0.0.1:12345"),
+    );
+    client.connect(connector).await?;
+    client.start_scanning().await?;
+    Ok(client)
 }
 
-#[derive(Subcommand)]
-enum Cmd {
-    Build,
-    Check,
+async fn start_in_process_server() -> Result<ButtplugClient, ButtplugClientError>
+{
+    let client = in_process_client(CLIENT_NAME, false).await;
+    client.start_scanning().await?;
+    Ok(client)
 }
 
-async fn start_client() -> ButtplugClient {
-    let client = in_process_client("cargo-vibe", false).await;
-    client.start_scanning().await.unwrap();
-    sleep(Duration::from_secs(1)).await;
-    client.stop_scanning();
-    client
-}
-
-async fn vibrate_all(client: &ButtplugClient, speed: f64, duration: Duration) {
+async fn vibrate_all(
+    client: &ButtplugClient,
+    speed: f64,
+    duration: Duration,
+) -> Result<(), ButtplugClientError> {
+    let mut any = false;
     for device in client.devices() {
-        device
-            .vibrate(&buttplug::client::VibrateCommand::Speed(speed))
-            .await
-            .unwrap();
+        device.vibrate(&VibrateCommand::Speed(speed)).await?;
+        any = true;
     }
-    sleep(duration).await;
-    client.stop_all_devices().await.unwrap();
-}
-
-fn is_success(stdout: Vec<u8>) -> bool {
-    for message in Message::parse_stream(BufReader::new(stdout.as_slice())) {
-        match message {
-            Ok(Message::BuildFinished(BuildFinished { success, .. })) => {
-                return success
-            }
-            Ok(Message::CompilerMessage(CompilerMessage {
-                message:
-                    Diagnostic {
-                        rendered: Some(rendered),
-                        ..
-                    },
-                ..
-            })) => {
-                eprintln!("{rendered}");
-            }
-            _ => (),
-        }
+    if any {
+        sleep(duration).await;
+        client.stop_all_devices().await?;
+    } else {
+        eprintln!("[cargo-vibe] no devices found");
     }
-    false
+    Ok(())
 }
-
-const CARGO_JSON_FLAG: &str =
-    "--message-format=json-diagnostic-rendered-ansi,json-render-diagnostics";
 
 #[tokio::main]
 async fn main() {
-    let client = spawn(start_client());
-    match Opt::parse() {
-        Opt::Vibe(Cmd::Build) => {
-            let cmd = Command::new("cargo")
-                .args(&["build", CARGO_JSON_FLAG])
-                .stdout(Stdio::piped())
-                .spawn()
-                .unwrap();
+    let code = real_main().await.unwrap_or_else(|e| {
+        eprintln!("Error: {:?}", e);
+        -1
+    });
+    std::process::exit(code)
+}
 
-            let output = cmd.wait_with_output().unwrap();
-            if is_success(output.stdout) {
-                eprintln!("[cargo-vibe] build successful!");
-                let client = client.await.unwrap();
-                vibrate_all(&client, 1.0, Duration::from_secs(3)).await;
-            } else {
-                eprintln!("[cargo-vibe] build failed");
-            }
-        }
-        Opt::Vibe(Cmd::Check) => {
-            let cmd = Command::new("cargo")
-                .args(&["check", CARGO_JSON_FLAG])
-                .stdout(Stdio::piped())
-                .spawn()
-                .unwrap();
+// code stolen from cargo-mommy, thanks Gankra
+async fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
+    let remote_client = spawn(connect_to_server());
+    let in_process_client = spawn(start_in_process_server());
 
-            let output = cmd.wait_with_output().unwrap();
-            if is_success(output.stdout) {
-                eprintln!("[cargo-vibe] check successful!");
-                let client = client.await.unwrap();
-                vibrate_all(&client, 1.0, Duration::from_secs(3)).await;
-            } else {
-                eprintln!("[cargo-vibe] check failed");
+    let cargo_var = std::env::var_os("CARGO");
+    let cargo = cargo_var.as_deref().unwrap_or(OsStr::new("cargo"));
+    let mut arg_iter = std::env::args_os();
+    let _cargo = arg_iter.next();
+    let _cmd = arg_iter.next();
+
+    let status = std::process::Command::new(cargo).args(arg_iter).status()?;
+    if status.success() {
+        eprintln!("[cargo-vibe] success!");
+        // get remote client, or fallback to in-process one
+        let client = if let Some(Ok(client)) = remote_client.now_or_never() {
+            eprintln!("[cargo-vibe] using server");
+            Ok(client)
+        } else {
+            eprintln!("[cargo-vibe] starting in-process server");
+            in_process_client.await
+        };
+        if let Ok(Ok(client)) = client {
+            if let Err(e) =
+                vibrate_all(&client, 1.0, Duration::from_secs(3)).await
+            {
+                eprintln!("[cargo-vibe] error trying to vibe: {e}")
             }
+        } else {
+            eprintln!("[cargo-vibe] sorry, couldn't create a client")
         }
+    } else {
+        eprintln!("[cargo-vibe] failed");
     }
+    Ok(status.code().unwrap_or(-1))
 }
