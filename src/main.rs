@@ -33,18 +33,48 @@ async fn start_in_process_server() -> Result<ButtplugClient, ButtplugClientError
     Ok(client)
 }
 
+// Parses pattern like "0.5 3s/0.75 1.5s"
+fn parse_pattern(
+    pattern: &str,
+) -> Result<Vec<(f64, Duration)>, Box<dyn std::error::Error>> {
+    pattern
+        .split('/')
+        .map(|x| {
+            let (speed, duration) =
+                x.split_once(" ").ok_or("couldn't split")?;
+            let speed = speed.parse()?;
+            let duration = duration
+                .strip_suffix("s")
+                .ok_or("missing 's'")?
+                .parse()
+                .map(Duration::from_secs_f64)?;
+            Ok((speed, duration))
+        })
+        .collect()
+}
+
 async fn vibrate_all(
     client: &ButtplugClient,
-    speed: f64,
-    duration: Duration,
 ) -> Result<(), ButtplugClientError> {
-    let mut any = false;
-    for device in client.devices() {
-        device.vibrate(&VibrateCommand::Speed(speed)).await?;
-        any = true;
-    }
-    if any {
-        sleep(duration).await;
+    let pattern = std::env::var("CARGO_VIBE_PATTERN")
+        .ok()
+        .as_deref()
+        .and_then(|x| {
+            parse_pattern(x)
+                .map_err(|e| eprintln!("pattern error: {e}"))
+                .ok()
+        })
+        .unwrap_or_else(|| vec![(1.0, Duration::from_secs(3))]);
+    eprintln!("{pattern:?}");
+
+    let devices = client.devices();
+    if !devices.is_empty() {
+        for (speed, duration) in pattern {
+            for device in &devices {
+                device.vibrate(&VibrateCommand::Speed(speed)).await?;
+            }
+            sleep(duration).await;
+        }
         client.stop_all_devices().await?;
     } else {
         eprintln!("[cargo-vibe] no devices found");
@@ -84,9 +114,7 @@ async fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
             in_process_client.await
         };
         if let Ok(Ok(client)) = client {
-            if let Err(e) =
-                vibrate_all(&client, 1.0, Duration::from_secs(3)).await
-            {
+            if let Err(e) = vibrate_all(&client).await {
                 eprintln!("[cargo-vibe] error trying to vibe: {e}")
             }
         } else {
