@@ -298,7 +298,7 @@ checksum = "dfb24e866b15a1af2a1b663f10c6b6b8f397a84aadb828f12e5b289ec23a3a3c"
 
 [[package]]
 name = "cargo-vibe"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "buttplug",
  "futures",
