@@ -41,10 +41,10 @@ fn parse_pattern(
         .split('/')
         .map(|x| {
             let (speed, duration) =
-                x.split_once(" ").ok_or("couldn't split")?;
+                x.split_once(' ').ok_or("couldn't split")?;
             let speed = speed.parse()?;
             let duration = duration
-                .strip_suffix("s")
+                .strip_suffix('s')
                 .ok_or("missing 's'")?
                 .parse()
                 .map(Duration::from_secs_f64)?;
