@@ -18,8 +18,9 @@ const CLIENT_NAME: &str = "cargo-vibe";
 
 async fn connect_to_server() -> Result<ButtplugClient, ButtplugClientError> {
     let client = ButtplugClient::new(CLIENT_NAME);
+    let address = std::env::var("CARGO_VIBE_ADDR").unwrap_or(String::from("ws://127.0.0.1:1234"));
     let connector = RemoteConn::<_, JsonSer, _, _>::new(
-        WebSocketTransport::new_insecure_connector("ws://127.0.0.1:12345"),
+        WebSocketTransport::new_insecure_connector(address.as_str()),
     );
     client.connect(connector).await?;
     client.start_scanning().await?;
