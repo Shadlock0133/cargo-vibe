@@ -32,7 +32,7 @@ CARGO_VIBE_PATTERN="0.4 1s/0.6 1s/0.8 0.75s/1.0 0.25s"
 
 ## Server Address
 
-If your server is running at an address or port other than the default (`ws://127.0.0.1:1234`), you can override it using `CARGO_VIBE_ADDR`. For example:
+If your server is running at an address or port other than the default (`ws://127.0.0.1:12345`), you can override it using `CARGO_VIBE_ADDR`. For example:
 
 ```shell
 CARGO_VIBE_ADDR="ws://172.31.160.1:69696"
