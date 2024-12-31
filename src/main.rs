@@ -16,9 +16,8 @@ use tokio::{spawn, time::sleep};
 
 const CLIENT_NAME: &str = "cargo-vibe";
 
-async fn connect_to_server() -> Result<ButtplugClient, ButtplugClientError> {
+async fn connect_to_server(address: String) -> Result<ButtplugClient, ButtplugClientError> {
     let client = ButtplugClient::new(CLIENT_NAME);
-    let address = std::env::var("CARGO_VIBE_ADDR").unwrap_or(String::from("ws://127.0.0.1:12345"));
     let connector = RemoteConn::<_, JsonSer, _, _>::new(
         WebSocketTransport::new_insecure_connector(address.as_str()),
     );
@@ -94,7 +93,9 @@ async fn main() {
 
 // code stolen from cargo-mommy, thanks Gankra
 async fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
-    let remote_client = spawn(connect_to_server());
+    let address = std::env::var("CARGO_VIBE_ADDR").unwrap_or(String::from("ws://127.0.0.1:12345"));
+    let is_remote = !address.contains("localhost") && !address.contains("127.0.0.1");
+    let remote_client = spawn(connect_to_server(address));
     let in_process_client = spawn(start_in_process_server());
 
     let cargo_var = std::env::var_os("CARGO");
@@ -107,9 +108,9 @@ async fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
     if status.success() {
         eprintln!("[cargo-vibe] success!");
         // get remote client, or fallback to in-process one
-        let client = if let Some(Ok(client)) = remote_client.now_or_never() {
+        let client = if is_remote || remote_client.is_finished() {
             eprintln!("[cargo-vibe] using server");
-            Ok(client)
+            remote_client.await
         } else {
             eprintln!("[cargo-vibe] starting in-process server");
             in_process_client.await
