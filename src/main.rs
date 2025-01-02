@@ -1,4 +1,4 @@
-use std::{ffi::OsStr, time::Duration};
+use std::{env::VarError, ffi::OsStr, time::Duration};
 
 use buttplug::{
     client::{ButtplugClient, ButtplugClientError, VibrateCommand},
@@ -16,11 +16,10 @@ use tokio::{spawn, time::sleep};
 
 const CLIENT_NAME: &str = "cargo-vibe";
 
-async fn connect_to_server() -> Result<ButtplugClient, ButtplugClientError> {
+async fn connect_to_server(address: &str) -> Result<ButtplugClient, ButtplugClientError> {
     let client = ButtplugClient::new(CLIENT_NAME);
-    let address = std::env::var("CARGO_VIBE_ADDR").unwrap_or(String::from("ws://127.0.0.1:12345"));
     let connector = RemoteConn::<_, JsonSer, _, _>::new(
-        WebSocketTransport::new_insecure_connector(address.as_str()),
+        WebSocketTransport::new_insecure_connector(address),
     );
     client.connect(connector).await?;
     client.start_scanning().await?;
@@ -94,7 +93,15 @@ async fn main() {
 
 // code stolen from cargo-mommy, thanks Gankra
 async fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
-    let remote_client = spawn(connect_to_server());
+    let address = std::env::var("CARGO_VIBE_ADDR");
+    if let Err(e @ VarError::NotUnicode(_)) = address {
+        return Err(e.into());
+    }
+    let must_use_remote = address.is_ok();
+    let remote_client = spawn(async move { 
+        let address = address.as_deref().unwrap_or("ws://127.0.0.1:12345");
+        connect_to_server(address).await
+    });
     let in_process_client = spawn(start_in_process_server());
 
     let cargo_var = std::env::var_os("CARGO");
@@ -107,7 +114,10 @@ async fn real_main() -> Result<i32, Box<dyn std::error::Error>> {
     if status.success() {
         eprintln!("[cargo-vibe] success!");
         // get remote client, or fallback to in-process one
-        let client = if let Some(Ok(client)) = remote_client.now_or_never() {
+        let client = if must_use_remote {
+            eprintln!("[cargo-vibe] using server");
+            remote_client.await
+        } else if let Some(Ok(client)) = remote_client.now_or_never() {
             eprintln!("[cargo-vibe] using server");
             Ok(client)
         } else {
